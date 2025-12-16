@@ -1,0 +1,74 @@
+---
+import Layout from '../layouts/Layout.astro';
+import { Shell } from '../components/Terminal/Shell';
+import { Sidebar } from '../components/Sidebar/Sidebar';
+import { buildFileSystem } from '../lib/fs_builder';
+import type { FSNode } from '../lib/fs_types';
+
+type SlugPageProps = { node: FSNode; path: string };
+type SlugPagePath = { params: { slug: string }; props: SlugPageProps };
+
+export async function getStaticPaths(): Promise<SlugPagePath[]> {
+  const fs = await buildFileSystem();
+  const paths: SlugPagePath[] = [];
+
+  const walk = (node: FSNode, currentPath: string) => {
+    // Determine slug (remove leading slash)
+    const slug = currentPath === '/' ? undefined : currentPath.substring(1);
+
+    if (slug) {
+        paths.push({
+            params: { slug },
+            props: { node, path: currentPath }
+        });
+    }
+
+    if (node.type === 'dir') {
+        for (const key of Object.keys(node.children)) {
+            walk(node.children[key], currentPath === '/' ? `/${key}` : `${currentPath}/${key}`);
+        }
+    }
+  };
+
+  walk(fs.root, '/');
+  return paths;
+}
+
+const { node, path } = Astro.props as SlugPageProps;
+const fs = await buildFileSystem();
+
+// Calculate initialCwd
+let initialCwd = '/';
+if (node.type === 'dir') {
+    initialCwd = path;
+} else {
+    // If it's a file, set CWD to parent directory
+    const parts = path.split('/');
+    parts.pop();
+    initialCwd = parts.join('/') || '/';
+}
+---
+
+<Layout title="uday.sh">
+  <main style="display: flex; gap: 0; padding: 20px; box-sizing: border-box; height: 100vh; width: 100vw; overflow: hidden;">
+    {/* Left Sidebar Panel (1/4 width) */}
+    <aside style="
+      width: 18%;
+      min-width: 250px;
+      height: calc(100vh - 40px);
+      background-color: transparent;
+      padding: 2rem;
+      box-sizing: border-box;
+      color: #E6E0D2;
+      font-family: 'Courier New', Courier, monospace;
+      flex-shrink: 0;
+    ">
+      <Sidebar client:only="react" fs={fs} currentPath={path} />
+    </aside>
+
+    {/* Main Terminal Area (3/4 width) */}
+    <div style="flex: 1; min-width: 0; overflow: hidden;">
+      <Shell client:only="react" fs={fs} initialCwd={initialCwd} />
+    </div>
+  </main>
+</Layout>

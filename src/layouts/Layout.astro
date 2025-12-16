@@ -1,0 +1,49 @@
+---
+interface Props {
+  title: string;
+}
+
+const { title } = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="description" content="A terminal-style personal website" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="generator" content={Astro.generator} />
+    <title>{title}</title>
+    <style is:global>
+      :root {
+        --color-bg: #0B0D0E;
+        --color-surface: #121415;
+        --color-text: #E6E0D2;
+        --color-text-dim: #B7B0A2;
+        --color-prompt: #B08D57;
+        --color-path: #B08D57;
+        --color-char: #B08D57;
+        --color-input: #E6E0D2;
+        --color-error: #8A2E2B;
+        --color-border: #2A2D2E;
+        --color-cursor: #B08D57;
+        --color-accent-2: #2F6F6A;
+      }
+
+      * { box-sizing: border-box; }
+
+      html, body {
+        margin: 0;
+        padding: 0;
+        background-color: var(--color-bg);
+        color: var(--color-text);
+        font-family: 'Courier New', Courier, monospace;
+        height: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <slot />
+  </body>
+</html>

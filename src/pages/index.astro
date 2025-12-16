@@ -1,0 +1,33 @@
+---
+import Layout from '../layouts/Layout.astro';
+import { Shell } from '../components/Terminal/Shell';
+import { Sidebar } from '../components/Sidebar/Sidebar';
+import { buildFileSystem } from '../lib/fs_builder';
+
+const fs = await buildFileSystem();
+---
+
+<Layout title="uday.sh">
+  <main style="display: flex; gap: 0; padding: 20px; box-sizing: border-box; height: 100vh; width: 100vw; overflow: hidden;">
+    {/* Left Sidebar Panel (1/4 width) */}
+    <aside style="
+      width: 18%;
+      min-width: 250px;
+      height: calc(100vh - 40px);
+      background-color: transparent;
+      padding: 2rem;
+      box-sizing: border-box;
+      color: #E6E0D2;
+      font-family: 'Courier New', Courier, monospace;
+      flex-shrink: 0;
+    ">
+      <Sidebar client:only="react" fs={fs} currentPath="/" />
+    </aside>
+
+    {/* Main Terminal Area (3/4 width) */}
+    <div style="flex: 1; min-width: 0; overflow: hidden;">
+      {/* Hydrate the shell immediately, it's the whole app */}
+      <Shell client:only="react" fs={fs} />
+    </div>
+  </main>
+</Layout>
