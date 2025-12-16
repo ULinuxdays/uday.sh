@@ -925,7 +925,10 @@ May this sanctuary provide to you the same peace it brought to me!`}
         const fs = props.fs;
         const pushUrl = (path: string) => {
             const normalized = path === '/' ? '/' : path.replace(/\/+$/, '');
-            window.history.pushState(null, '', normalized);
+            const baseUrl = import.meta.env.BASE_URL || '/';
+            const base = baseUrl === '/' ? '' : baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
+            const url = normalized === '/' ? (baseUrl || '/') : `${base}${normalized}`;
+            window.history.pushState(null, '', url);
         };
 
         const runHome = () => {
