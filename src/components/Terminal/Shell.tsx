@@ -869,6 +869,13 @@ export const Shell: React.FC<ShellProps> = (props) => {
         if (suggestions.length === 0) {
             suggestions = buildGlobalPathSuggestions(props.fs.root, tokenPrefix, pathMode, 6);
         }
+        // For `open`, always keep a visible list (up to 5) even when tokenPrefix is empty or very narrow.
+        if (commandName === 'open' && suggestions.length < 5) {
+            const extras = buildGlobalPathSuggestions(props.fs.root, tokenPrefix, pathMode, 10).filter(
+                (s) => !suggestions.some((t) => t.insertText === s.insertText)
+            );
+            suggestions = [...suggestions, ...extras].slice(0, 10);
+        }
 
         // Re-rank: exact matches first, then prefix matches, prefer files over dirs, then shorter paths.
         const norm = (s: AutocompleteSuggestion) => s.insertText.toLowerCase().replace(/\/$/, '');
