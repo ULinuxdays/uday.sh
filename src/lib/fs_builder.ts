@@ -26,23 +26,12 @@ export async function buildFileSystem(): Promise<VirtualFS> {
 
     // Populate Books & Annotations
     books.forEach((entry) => {
-        // Expected slug format: "book-slug" (for book metadata) or "book-slug/note-slug" (for notes)
-        // Actually, based on my convention:
-        // /books/dune/_index.md -> slug: "dune" (or similar, depending on how Astro handles directory index)
-        // /books/dune/analysis.md -> slug: "dune/analysis"
-
-        // We need to parse the slug to determine hierarchy.
+        // Slug pattern: "book-slug" or "book-slug/note-slug"
         const parts = entry.slug.split('/');
 
-        // Determine parent directory: Hoist 'dune' to root, others stay in 'books'
+        // All books live under /books/<book-slug>
         const bookName = parts[0];
-        let parentDir: DirectoryNode;
-
-        if (bookName === 'dune') {
-            parentDir = root;
-        } else {
-            parentDir = root.children['books'] as DirectoryNode;
-        }
+        const parentDir: DirectoryNode = root.children['books'] as DirectoryNode;
 
         if (parts.length === 1) {
             // Book root definition (e.g. "dune" or "sicp")

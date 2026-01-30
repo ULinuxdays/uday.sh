@@ -57,13 +57,14 @@ The shell accepts a small set of commands designed for reading and navigation:
 
 Quality-of-life:
 
-- **Autocomplete**: press `Tab` for the best suggestion; file/dir completion is path-aware.
+- **Autocomplete**: always-on list (max 5 items) that matches anywhere in names/titles; `open` shows file/dir suggestions immediately (no leading-letter requirement).
+- **One-tap open**: in `open`, pressing `Tab` runs the top visible suggestion and clears the prompt—no stale partial text.
 - **Fuzzy fixes**: mistyped commands and paths suggest close matches.
 - **Deep links**: opening a directory/file updates the URL so pages can be shared/bookmarked.
 
 ## Content authoring
 
-Content lives in `src/content/books` and is managed via Astro Content Collections (`src/content/config.ts`).
+Content lives in `src/content/books` and is managed via Astro Content Collections (`src/content/config.ts`). Example corpus: `white-nights` (formerly `dune`) with three annotations.
 
 ### Add a new book
 
@@ -125,4 +126,3 @@ If you want different navigation rules or a different library structure, update 
 ## License
 
 No license file is included in this repository. If you intend this to be open-source, add a `LICENSE` and update this section accordingly.
-

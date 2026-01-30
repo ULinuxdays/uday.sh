@@ -457,24 +457,33 @@ const buildPathAutocompleteSuggestions = (
     const dirNode = getNodeAtPath(root, resolvedDirPath);
     if (!dirNode || dirNode.type !== 'dir') return [];
 
-    const results: AutocompleteSuggestion[] = [];
-    for (const [childName, childNode] of getSortedChildren(dirNode)) {
-        if (basePrefixLower && !childName.toLowerCase().startsWith(basePrefixLower)) continue;
-        if (mode === 'dir' && childNode.type !== 'dir') continue;
-        if (mode === 'file' && childNode.type !== 'file') continue;
+    const candidates = getSortedChildren(dirNode).filter(([, childNode]) => {
+        if (mode === 'dir') return childNode.type === 'dir';
+        if (mode === 'file') return childNode.type === 'file';
+        return true;
+    });
 
+    const rankedNames =
+        basePrefixLower.length === 0
+            ? candidates.map(([name]) => name)
+            : rankCandidates(
+                  basePrefixLower,
+                  candidates.map(([name]) => name),
+                  12
+              );
+
+    return rankedNames.slice(0, 12).map((name) => {
+        const childNode = dirNode.children[name];
         const suffix = childNode.type === 'dir' ? '/' : '';
-        const insertText = `${prefixForRebuild}${childName}${suffix}`;
+        const insertText = `${prefixForRebuild}${name}${suffix}`;
         const title = childNode.meta?.title;
-        const label = title && title !== childName ? `${insertText} — ${title}` : insertText;
-        results.push({
+        const label = title && title !== name ? `${insertText} — ${title}` : insertText;
+        return {
             kind: childNode.type === 'dir' ? 'dir' : 'file',
             insertText,
             label,
-        });
-    }
-
-    return results;
+        };
+    });
 };
 
 const buildPathFuzzySuggestions = (
@@ -554,6 +563,82 @@ const collectRelativePaths = (
 
     walk(dir, '', 0);
     return { files, dirs };
+};
+
+// Global fallback suggestions: search the entire tree (shallow-ish) for matches.
+const buildGlobalPathSuggestions = (
+    root: DirectoryNode,
+    query: string,
+    mode: PathCompletionMode,
+    limit: number = 6
+): AutocompleteSuggestion[] => {
+    const q = query.trim().toLowerCase();
+    const nodes: Array<{ path: string; node: FSNode }> = [];
+
+    const walk = (node: FSNode, path: string, depth: number) => {
+        if (nodes.length >= 200) return;
+        if (node.type === 'dir') {
+            if (mode !== 'file') nodes.push({ path, node });
+            if (depth >= 4) return; // keep search shallow to stay relevant
+            for (const [name, child] of getSortedChildren(node)) {
+                const childPath = path === '/' ? `/${name}` : `${path}/${name}`;
+                walk(child, childPath, depth + 1);
+            }
+        } else {
+            if (mode !== 'dir') nodes.push({ path, node });
+        }
+    };
+
+    walk(root, '/', 0);
+
+    const scored = (q
+        ? nodes.filter(({ path, node }) => {
+            const name = (node as any).name?.toLowerCase?.() ?? '';
+            const title = node.meta?.title?.toLowerCase?.() ?? '';
+            return name.includes(q) || title.includes(q) || path.toLowerCase().includes(q);
+        })
+        : nodes
+    ).map(({ path, node }) => {
+        const name = (node as any).name?.toLowerCase?.() ?? '';
+        const title = node.meta?.title?.toLowerCase?.() ?? '';
+        const pathLower = path.toLowerCase();
+
+        // Lightweight heuristic scoring: lower is better.
+        const starts = (str: string) => (str.startsWith(q) ? 0 : 1);
+        const contains = (str: string) => (str.includes(q) ? 0 : 1);
+
+        let score = 0;
+        if (q.length > 0) {
+            score =
+                starts(name) * 10 +
+                starts(title) * 12 + // slightly lower priority than exact name start
+                contains(name) * 20 +
+                contains(title) * 22 +
+                contains(pathLower) * 30 +
+                path.length * 0.01; // prefer shorter paths when tied
+        }
+
+        return { path, node, score };
+    });
+
+    scored.sort((a, b) => a.score - b.score);
+    const picked = scored.slice(0, limit);
+
+    return picked.map(({ path, node }) => {
+        const isDir = node.type === 'dir';
+        const suffix = isDir && path !== '/' ? '/' : '';
+        const insertText = path === '/' ? '/' : `${path}${suffix}`;
+        const labelTitle = node.meta?.title;
+        const label =
+            labelTitle && labelTitle.toLowerCase() !== (node as any)?.name?.toLowerCase?.()
+                ? `${insertText} — ${labelTitle}`
+                : insertText;
+        return {
+            kind: isDir ? 'dir' as const : 'file' as const,
+            insertText,
+            label,
+        };
+    });
 };
 
 const collectSearchTerms = (root: DirectoryNode, maxTerms: number): string[] => {
@@ -723,12 +808,12 @@ export const Shell: React.FC<ShellProps> = (props) => {
 
     const autocomplete = useMemo(() => {
         if (helpWizardStep !== 'none') {
-            return { suggestions: [] as AutocompleteSuggestion[], ghostSuffix: '', beforeToken: '', quoteChar: null as string | null, tokenPrefix: '', mode: 'none' as 'none' | 'command' | 'path' };
+            return { suggestions: [] as AutocompleteSuggestion[], ghostSuffix: '', beforeToken: '', quoteChar: null as string | null, tokenPrefix: '', mode: 'none' as 'none' | 'command' | 'path', commandName: null as string | null };
         }
 
         const trimmedStart = input.trimStart();
         if (trimmedStart.length === 0) {
-            return { suggestions: [] as AutocompleteSuggestion[], ghostSuffix: '', beforeToken: '', quoteChar: null as string | null, tokenPrefix: '', mode: 'none' as 'none' | 'command' | 'path' };
+            return { suggestions: [] as AutocompleteSuggestion[], ghostSuffix: '', beforeToken: '', quoteChar: null as string | null, tokenPrefix: '', mode: 'none' as 'none' | 'command' | 'path', commandName: null as string | null };
         }
 
         const tokenMatch = input.match(/(\S*)$/);
@@ -740,32 +825,82 @@ export const Shell: React.FC<ShellProps> = (props) => {
         const tokenPrefixLower = tokenPrefix.toLowerCase();
 
         const isCommandPosition = !/\s/.test(trimmedStart);
+        const cmdToken = trimmedStart.split(/\s+/)[0]?.toLowerCase() ?? '';
+        const normalizedCmdToken = AUTOCOMPLETE_ALIASES[cmdToken] || cmdToken;
+
+        const pathModeFromCmd = (cmd: string): PathCompletionMode | null =>
+            cmd === 'cd' ? 'dir'
+                : cmd === 'cat' ? 'file'
+                    : cmd === 'open' ? 'both'
+                        : cmd === 'tree' ? 'both'
+                            : null;
+
+        // If user has fully typed a path-capable command (e.g., "open") but hasn't added a space yet,
+        // proactively show path suggestions to reduce keystrokes.
         if (isCommandPosition) {
+            const pathMode = pathModeFromCmd(normalizedCmdToken);
+            if (pathMode && tokenPrefixLower === normalizedCmdToken && props.fs) {
+                const suggestions = buildPathAutocompleteSuggestions(props.fs.root, state.currentCwd, '', pathMode).slice(0, 6);
+                const ghostSuffix = '';
+                const cmdWithSpace = input.endsWith(' ') ? input : `${input} `;
+                return { suggestions, ghostSuffix, beforeToken: cmdWithSpace, quoteChar, tokenPrefix: '', mode: 'path' as const };
+            }
+
             const suggestions = AUTOCOMPLETE_COMMANDS
                 .map((c) => c.name)
                 .filter((name) => name.startsWith(tokenPrefixLower))
                 .map((name) => ({ kind: 'command' as const, insertText: name, label: name }));
             const ghostSuffix = suggestions[0] ? suggestions[0].insertText.slice(tokenPrefix.length) : '';
-            return { suggestions, ghostSuffix, beforeToken, quoteChar, tokenPrefix, mode: 'command' as const };
+            return { suggestions, ghostSuffix, beforeToken, quoteChar, tokenPrefix, mode: 'command' as const, commandName: normalizedCmdToken };
         }
 
-        const rawCmdToken = trimmedStart.split(/\s+/)[0]?.toLowerCase() ?? '';
-        const commandName = AUTOCOMPLETE_ALIASES[rawCmdToken] || rawCmdToken;
+        const rawCmdToken = cmdToken;
+        const commandName = normalizedCmdToken;
 
-        const pathMode: PathCompletionMode | null =
-            commandName === 'cd' ? 'dir'
-                : commandName === 'cat' ? 'file'
-                    : commandName === 'open' ? 'both'
-                        : commandName === 'tree' ? 'both'
-                            : null;
+        const pathMode: PathCompletionMode | null = pathModeFromCmd(commandName);
 
         if (!pathMode || !props.fs) {
-            return { suggestions: [] as AutocompleteSuggestion[], ghostSuffix: '', beforeToken, quoteChar, tokenPrefix, mode: 'none' as const };
+            return { suggestions: [] as AutocompleteSuggestion[], ghostSuffix: '', beforeToken, quoteChar, tokenPrefix, mode: 'none' as const, commandName };
         }
 
-        const suggestions = buildPathAutocompleteSuggestions(props.fs.root, state.currentCwd, tokenPrefix, pathMode);
-        const ghostSuffix = suggestions[0] ? suggestions[0].insertText.slice(tokenPrefix.length) : '';
-        return { suggestions, ghostSuffix, beforeToken, quoteChar, tokenPrefix, mode: 'path' as const };
+        let suggestions = buildPathAutocompleteSuggestions(props.fs.root, state.currentCwd, tokenPrefix, pathMode).slice(0, 12);
+
+        // Fallback: if nothing in the current directory matches, search globally.
+        if (suggestions.length === 0) {
+            suggestions = buildGlobalPathSuggestions(props.fs.root, tokenPrefix, pathMode, 6);
+        }
+
+        // Re-rank: exact matches first, then prefix matches, prefer files over dirs, then shorter paths.
+        const norm = (s: AutocompleteSuggestion) => s.insertText.toLowerCase().replace(/\/$/, '');
+        suggestions.sort((a, b) => {
+            const na = norm(a);
+            const nb = norm(b);
+            const exactA = tokenPrefixLower.length > 0 && na === tokenPrefixLower;
+            const exactB = tokenPrefixLower.length > 0 && nb === tokenPrefixLower;
+            if (exactA !== exactB) return exactA ? -1 : 1;
+
+            const prefixA = tokenPrefixLower.length > 0 && na.startsWith(tokenPrefixLower);
+            const prefixB = tokenPrefixLower.length > 0 && nb.startsWith(tokenPrefixLower);
+            if (prefixA !== prefixB) return prefixA ? -1 : 1;
+
+            if (a.kind !== b.kind) return a.kind === 'file' ? -1 : 1;
+
+            return na.length - nb.length;
+        });
+
+        suggestions = suggestions.slice(0, 5);
+
+        // Ghost text only when the top suggestion is a prefix match; otherwise leave it blank to avoid nonsense filler.
+        let ghostSuffix = '';
+        if (tokenPrefix.length > 0 && suggestions[0]) {
+            const top = suggestions[0];
+            const insertLower = top.insertText.toLowerCase();
+            const tokenLower = tokenPrefix.toLowerCase();
+            if (insertLower.startsWith(tokenLower)) {
+                ghostSuffix = top.insertText.slice(tokenPrefix.length);
+            }
+        }
+        return { suggestions, ghostSuffix, beforeToken, quoteChar, tokenPrefix, mode: 'path' as const, commandName };
     }, [helpWizardStep, input, props.fs, state.currentCwd]);
 
     const execute = (raw: string) => {
@@ -795,6 +930,13 @@ export const Shell: React.FC<ShellProps> = (props) => {
         const { commandName, args } = parsed;
 
         const nowId = (suffix: string) => `${Date.now()}-${suffix}`;
+
+        // Allow error suggestions to be clickable and execute the suggested command directly.
+        const runFixCommand = (cmd: string) => {
+            // Defer to next frame so we don't mutate state while rendering this error.
+            window.requestAnimationFrame(() => execute(cmd));
+        };
+
         const buildErrorContent = (message: string, fixes: FixSuggestion[]) => {
             if (fixes.length === 0) return <div style={{ whiteSpace: 'pre-wrap' }}>{message}</div>;
 
@@ -810,23 +952,33 @@ export const Shell: React.FC<ShellProps> = (props) => {
                             alignItems: 'center',
                         }}
                     >
-                        <span style={{ color: '#B7B0A2', opacity: 0.75 }}>Did you mean:</span>
+                        <span style={{ color: '#B7B0A2', opacity: 0.75, userSelect: 'none' }}>Did you mean:</span>
                         {fixes.slice(0, 4).map((fix) => (
-                            <span
+                            <button
                                 key={fix.command}
                                 style={{
+                                    cursor: 'pointer',
+                                    border: '1px solid rgba(230, 224, 210, 0.14)',
+                                    borderRadius: '6px',
+                                    padding: '4px 6px',
+                                    background: 'rgba(0, 0, 0, 0.18)',
                                     fontFamily: 'monospace',
                                     fontSize: '12px',
                                     color: '#E6E0D2',
-                                    opacity: 0.75,
+                                    opacity: 0.9,
                                     whiteSpace: 'pre',
-                                    userSelect: 'text',
+                                    userSelect: 'none',
+                                }}
+                                onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    runFixCommand(fix.command);
                                 }}
                             >
                                 {fix.label}
-                            </span>
+                            </button>
                         ))}
-                        <span style={{ color: '#B7B0A2', opacity: 0.55, marginLeft: '0.25rem' }}>Type one to run</span>
+                        <span style={{ color: '#B7B0A2', opacity: 0.55, marginLeft: '0.35rem', userSelect: 'none' }}>Click to run</span>
                     </div>
                 </div>
             );
@@ -1180,17 +1332,57 @@ Tip: Use ↑/↓ to cycle command history.`;
             }
 
             case 'ls': {
-                const node = getNodeAtPath(fs.root, state.currentCwd);
-                if (!node || node.type !== 'dir') {
-                    addError(`ls: not a directory: ${state.currentCwd}`);
+                const targetArg = args[0];
+                const resolvedPath = targetArg
+                    ? resolvePath(fs.root, state.currentCwd, targetArg)
+                    : state.currentCwd;
+
+                if (!resolvedPath) {
+                    const fixes = buildPathFuzzySuggestions(fs.root, state.currentCwd, targetArg || '', 'dir').map((s) => ({
+                        command: `ls ${s.insertText}`,
+                        label: `ls ${s.label}`,
+                    }));
+                    addError(
+                        `ls: no such file or directory: ${targetArg}`,
+                        fixes.length > 0 ? fixes : [{ command: 'pwd', label: 'pwd' }, { command: 'tree', label: 'tree' }]
+                    );
+                    break;
+                }
+
+                const node = getNodeAtPath(fs.root, resolvedPath);
+                if (!node) {
+                    const fixes = buildPathFuzzySuggestions(fs.root, state.currentCwd, targetArg || '', 'dir').map((s) => ({
+                        command: `ls ${s.insertText}`,
+                        label: `ls ${s.label}`,
+                    }));
+                    addError(
+                        `ls: no such file or directory: ${targetArg ?? resolvedPath}`,
+                        fixes.length > 0 ? fixes : [{ command: 'pwd', label: 'pwd' }, { command: 'tree', label: 'tree' }]
+                    );
+                    break;
+                }
+
+                if (node.type !== 'dir') {
+                    addError(`ls: not a directory: ${targetArg ?? resolvedPath}`, [
+                        { command: `cat ${targetArg ?? resolvedPath}`, label: `cat ${targetArg ?? resolvedPath}` },
+                        { command: `open ${targetArg ?? resolvedPath}`, label: `open ${targetArg ?? resolvedPath}` },
+                    ]);
                     break;
                 }
 
                 const children = getSortedChildren(node).map(([name, child]) => {
                     const isDir = child.type === 'dir';
                     return (
-                        <span key={name} style={{ marginRight: '1rem', color: isDir ? '#B08D57' : '#E6E0D2', fontWeight: isDir ? 'bold' : 'normal' }}>
-                            {name}{isDir ? '/' : ''}
+                        <span
+                            key={name}
+                            style={{
+                                marginRight: '1rem',
+                                color: isDir ? '#B08D57' : '#E6E0D2',
+                                fontWeight: isDir ? 'bold' : 'normal',
+                            }}
+                        >
+                            {name}
+                            {isDir ? '/' : ''}
                         </span>
                     );
                 });
@@ -1200,8 +1392,8 @@ Tip: Use ↑/↓ to cycle command history.`;
                     item: {
                         id: Date.now() + '-ls',
                         type: 'output',
-                        content: <div style={{ display: 'flex', flexWrap: 'wrap' }}>{children}</div>
-                    }
+                        content: <div style={{ display: 'flex', flexWrap: 'wrap' }}>{children}</div>,
+                    },
                 });
                 break;
             }
@@ -1370,6 +1562,27 @@ Tip: Use ↑/↓ to cycle command history.`;
         const completedToken = `${quote}${top.insertText}`;
         const shouldAppendSpace =
             autocomplete.mode === 'command' ? true : top.kind !== 'dir' && !top.insertText.endsWith('/');
+
+        // New: for `open`, Tab always opens the top visible suggestion and clears the input,
+        // so partial text doesn't linger (e.g., "one m" -> opens matching file).
+        if (autocomplete.mode === 'path' && autocomplete.commandName === 'open') {
+            execute(`open ${top.insertText}`);
+            setInput('');
+            return;
+        }
+
+        // If user already typed the exact path to a file and pressed Tab, run the open command immediately.
+        if (
+            autocomplete.mode === 'path' &&
+            autocomplete.commandName === 'open' &&
+            autocomplete.tokenPrefix.length > 0 &&
+            top.kind === 'file' &&
+            top.insertText.toLowerCase() === autocomplete.tokenPrefix.toLowerCase()
+        ) {
+            execute(`${autocomplete.beforeToken}${completedToken}`);
+            setInput('');
+            return;
+        }
 
         setInput(`${autocomplete.beforeToken}${completedToken}${shouldAppendSpace ? ' ' : ''}`);
     };
