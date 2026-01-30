@@ -1,4 +1,4 @@
-# uday.sh
+# uday.txt
 
 Terminal-style personal website / digital garden built with Astro + React. Content is surfaced as a “virtual filesystem” you can navigate via an interactive shell, with deep-linkable URLs for directories and files.
 
